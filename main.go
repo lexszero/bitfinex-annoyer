@@ -10,29 +10,42 @@ import (
 	"log"
 	"math"
 	"sort"
+	"time"
 )
 
 type Config struct {
 	ApiKey                 string
 	ApiSecret              string
+	Pair                   string
 	OrderBookPrecision     string
 	OrderBookLen           int
 	PositionsLen           int
 	OrdersLen              int
 	HighlightTradesOver    float64
 	HighlightOrderBookOver float64
+	HistoryRecordPeriod    time.Duration
+	HistoryHeight          int
+}
+
+type HistoryRecord struct {
+	Timestamp             time.Time
+	BuyAmount, SellAmount float64
 }
 
 var (
 	conf Config
 
-	winTicker, winTrades, winBookBid, winBookAsk, winPositions, winOrders *WinPanel
+	winTicker, winTrades, winBookBid, winBookAsk, winPositions, winOrders, winHistory *WinPanel
 
 	lastTrades []bitfinex.WebsocketTrade
 	bookBid    = make(map[float64]*bitfinex.WebsocketBook)
 	bookAsk    = make(map[float64]*bitfinex.WebsocketBook)
 	positions  = make(map[string]bitfinex.WebsocketPosition)
 	orders     = make(map[int64]bitfinex.WebsocketOrder)
+
+	history        []HistoryRecord
+	hist           *HistoryRecord
+	historyUpdated time.Time
 
 	bookBidSorted, bookAskSorted OrderBook
 )
@@ -45,6 +58,7 @@ const (
 
 	bookWidth   = 31
 	tradesWidth = 25
+	screenWidth = 87
 )
 
 type WinPanel struct {
@@ -123,7 +137,7 @@ func updatePositions() {
 
 		winPositions.Addstr(2, 1+n, fmt.Sprintf("%-6s %-7s", v.Pair, v.Status), 0)
 		winPositions.Addstr(17, 1+n, fmt.Sprintf("%-6.2f  %-8.2f", v.Amount, v.Price), A_BOLD)
-		winPositions.Addstr(37, 1+n, fmt.Sprintf("%-6.2f       %-9.2f %6.2f", value/v.Amount, profit, -(profit/baseValue)*100), attrPL)
+		winPositions.Addstr(37, 1+n, fmt.Sprintf("%-6.2f       %-9.2f %6.2f", value/v.Amount, profit, (profit/math.Abs(baseValue))*100), attrPL)
 
 		n++
 		if n >= 3 {
@@ -131,6 +145,43 @@ func updatePositions() {
 		}
 	}
 }
+
+func updateHistoryBar(n, baseline int, h float64, attr int32) {
+	inc := int(math.Abs(h) / h)
+	for i := 0; i != int(h); i += inc {
+		winHistory.Addch(n, baseline-i, '*', attr)
+	}
+	if math.Abs(h) > float64(int(math.Abs(h))) {
+		winHistory.Addch(n, baseline-(int(h)), '|', attr)
+	}
+}
+
+func updateHistoryInfo() {
+	winHistory.Addstr(0, 0, fmt.Sprintf("Last %d sec: buy %-6.2f, sell %-6.2f",
+		conf.HistoryRecordPeriod, hist.BuyAmount, hist.SellAmount), 0)
+}
+
+func updateHistory() {
+	if time.Since(historyUpdated) < time.Second {
+		updateHistoryInfo()
+		return
+	}
+	baseline := conf.HistoryHeight / 2
+	var peak float64
+	for _, v := range history {
+		t := math.Max(v.BuyAmount, -v.SellAmount)
+		peak = math.Max(t, peak)
+	}
+	scale := peak / float64(baseline)
+	winHistory.Clear()
+	for n, v := range history {
+		updateHistoryBar(n, baseline-1, v.BuyAmount/scale, Color_pair(clGreen))
+		updateHistoryBar(n, baseline, v.SellAmount/scale, Color_pair(clRed))
+	}
+	updateHistoryInfo()
+	historyUpdated = time.Now()
+}
+
 func main() {
 	buf, err := ioutil.ReadFile("config.json")
 	if err != nil {
@@ -140,7 +191,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Unable to parse config:", err)
 	}
-	lastTrades = make([]bitfinex.WebsocketTrade, conf.OrderBookLen)
 
 	_, err = Initscr()
 	if err != nil {
@@ -151,15 +201,43 @@ func main() {
 	Init_pair(clRed, COLOR_RED, COLOR_BLACK)
 	Init_pair(clGreen, COLOR_GREEN, COLOR_BLACK)
 	Init_pair(clBlue, COLOR_BLUE, COLOR_BLACK)
-	winTicker = NewWinPanel(1, 100, 0, 0, false, "Ticker")
-	winBookBid = NewWinPanel(conf.OrderBookLen+2, bookWidth, 1, 0, true, "Bid")
-	winBookAsk = NewWinPanel(conf.OrderBookLen+2, bookWidth, 1, bookWidth, true, "Ask")
-	winTrades = NewWinPanel(conf.OrderBookLen+2, tradesWidth, 1, 2*bookWidth, true, "Last trades")
-	winPositions = NewWinPanel(conf.PositionsLen+2, 2*bookWidth+tradesWidth, conf.OrderBookLen+2+1, 0, true, "  Pair   Status  Amount  Base price  Curr. price  P/L        P/L% ")
-	winOrders = NewWinPanel(conf.OrdersLen+2, 2*bookWidth+tradesWidth, conf.OrderBookLen+conf.PositionsLen+2+2+1, 0, true, "  ID   Pair    Type   Orig.Amount   Amount   Price")
+	x, y, w, h := 0, 0, 0, 0
+
+	w, h = screenWidth, 1
+	winTicker = NewWinPanel(h, w, x, y, false, "Ticker")
+	x += h
+
+	h = conf.OrderBookLen + 2
+	w = bookWidth
+	winBookBid = NewWinPanel(h, w, x, y, true, "Bid")
+	y += w
+
+	winBookAsk = NewWinPanel(h, w, x, y, true, "Ask")
+	y += w
+
+	w = tradesWidth
+	winTrades = NewWinPanel(h, w, x, y, true, "Last trades")
+	x += h
+	w = y + w
+
+	y = 0
+	h = conf.HistoryHeight
+	winHistory = NewWinPanel(h, w, x, y, false, "")
+	x += h
+
+	h = conf.PositionsLen + 2
+	winPositions = NewWinPanel(h, w, x, y, true, "  Pair   Status  Amount  Base price  Curr. price  P/L        P/L% ")
+	x += h
+
+	h = conf.OrdersLen + 2
+	winOrders = NewWinPanel(h, w, x, y, true, "  ID   Pair    Type   Orig.Amount   Amount   Price")
 
 	UpdatePanels()
 	DoUpdate()
+
+	lastTrades = make([]bitfinex.WebsocketTrade, conf.OrderBookLen)
+	history = make([]HistoryRecord, screenWidth, screenWidth)
+	hist = &history[len(history)-1]
 
 	api := bitfinex.NewClient().Auth(conf.ApiKey, conf.ApiSecret)
 
@@ -174,9 +252,9 @@ func main() {
 	}
 	defer api.WebSocket.Close()
 
-	api.WebSocket.SubscribeTrades(bitfinex.BTCUSD, trades)
-	api.WebSocket.SubscribeTicker(bitfinex.BTCUSD, ticker)
-	api.WebSocket.SubscribeBook(bitfinex.BTCUSD, conf.OrderBookPrecision, book)
+	api.WebSocket.SubscribeTrades(conf.Pair, trades)
+	api.WebSocket.SubscribeTicker(conf.Pair, ticker)
+	api.WebSocket.SubscribeBook(conf.Pair, conf.OrderBookPrecision, book)
 	api.WebSocket.SubscribeAccount(account)
 	go api.WebSocket.Subscribe()
 
@@ -205,6 +283,12 @@ func main() {
 				}
 				winTrades.Addstr(2, 1+n, fmt.Sprintf("%-4s %6.2f @ %-8.2f", direction, math.Abs(t.Amount), t.Price), attr)
 			}
+			if t.Amount < 0 {
+				hist.SellAmount += t.Amount
+			} else {
+				hist.BuyAmount += t.Amount
+			}
+			updateHistory()
 
 		case t := <-ticker:
 			winTicker.Addstr(0, 0, fmt.Sprintf("Last: %-8.2f", t.LastPrice), Color_pair(clBlue)|A_BOLD)
@@ -270,9 +354,21 @@ func main() {
 				updatePositions()
 
 			case bitfinex.WebsocketOrder:
-				orders[t.OrderID] = t
+				if t.Term() == "oc" {
+					delete(orders, t.OrderID)
+				} else {
+					orders[t.OrderID] = t
+
+				}
 			}
 		}
+
+		if time.Since(hist.Timestamp) > conf.HistoryRecordPeriod*time.Second {
+			history = append(history[1:], HistoryRecord{Timestamp: time.Now()})
+			hist = &history[len(history)-1]
+			updateHistory()
+		}
+
 		UpdatePanels()
 		DoUpdate()
 	}
