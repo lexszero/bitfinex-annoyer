@@ -1,0 +1,10 @@
+{
+	"ApiKey": "",
+	"ApiSecret": "",
+	"OrderBookPrecision": "P1",
+	"OrderBookLen": 15,
+	"PositionsLen": 3,
+	"OrdersLen": 3,
+	"HighlightTradesOver": 0.5,
+	"HighlightOrderBookOver": 0.5
+}
