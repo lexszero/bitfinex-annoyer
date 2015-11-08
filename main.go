@@ -368,9 +368,17 @@ func main() {
 			case bitfinex.WebsocketOrder:
 				if t.Term() == "oc" {
 					delete(orders, t.OrderID)
+					tableOrders.DeleteRow(t.OrderID)
 				} else {
 					orders[t.OrderID] = t
-
+					attr := int32(A_BOLD)
+					if t.Amount > 0 {
+						attr |= Color_pair(clGreen)
+					} else {
+						attr |= Color_pair(clRed)
+					}
+					tableOrders.SetRowColAttr(t.OrderID, 2, attr)
+					tableOrders.UpdateRowValues(t.OrderID, t.Type, t.AmountOrig, t.Amount, t.Price, t.PriceAvg)
 				}
 			}
 		}
