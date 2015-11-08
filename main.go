@@ -35,7 +35,9 @@ type HistoryRecord struct {
 var (
 	conf Config
 
-	winTicker, winTrades, winBookBid, winBookAsk, winPositions, winOrders, winHistory *WinPanel
+	winTicker, winTrades, winBookBid, winBookAsk, winHistory *WinPanel
+
+	tablePositions, tableOrders *Table
 
 	lastTrades []bitfinex.WebsocketTrade
 	bookBid    = make(map[float64]*bitfinex.WebsocketBook)
@@ -101,7 +103,6 @@ func (b ByPrice) Less(i, j int) bool {
 }
 
 func updatePositions() {
-	n := 0
 	for _, v := range positions {
 		var book *OrderBook
 		if v.Amount < 0 {
@@ -135,14 +136,11 @@ func updatePositions() {
 			attrPL |= Color_pair(clGreen)
 		}
 
-		winPositions.Addstr(2, 1+n, fmt.Sprintf("%-6s %-7s", v.Pair, v.Status), 0)
-		winPositions.Addstr(17, 1+n, fmt.Sprintf("%-6.2f  %-8.2f", v.Amount, v.Price), A_BOLD)
-		winPositions.Addstr(37, 1+n, fmt.Sprintf("%-6.2f       %-9.2f %6.2f", value/v.Amount, profit, (profit/math.Abs(baseValue))*100), attrPL)
-
-		n++
-		if n >= 3 {
-			break
-		}
+		tablePositions.SetRowColAttr(v.Pair, 3, attrPL)
+		tablePositions.SetRowColAttr(v.Pair, 4, attrPL)
+		tablePositions.SetRowColAttr(v.Pair, 5, attrPL)
+		tablePositions.UpdateRowValues(v.Pair, v.Status, v.Amount, v.Price,
+			value/v.Amount, profit, (profit/math.Abs(baseValue))*100)
 	}
 }
 
@@ -225,12 +223,25 @@ func main() {
 	winHistory = NewWinPanel(h, w, x, y, false, "")
 	x += h
 
-	h = conf.PositionsLen + 2
-	winPositions = NewWinPanel(h, w, x, y, true, "  Pair   Status  Amount  Base price  Curr. price  P/L        P/L% ")
+	h = conf.PositionsLen + 3
+	tablePositions = NewTable(h, w, x, y, "Positions", []*TableField{
+		{"Status       ", -7, "s", 0, ""},
+		{"Amount", -6, ".2f", A_BOLD, ""},
+		{"Base price", -10, ".2f", A_BOLD, ""},
+		{"Curr.price", -8, ".2f", A_BOLD, ""},
+		{"P/L", -9, ".2f", A_BOLD, ""},
+		{"P/L %", -6, ".2f", A_BOLD, ""},
+	})
 	x += h
 
-	h = conf.OrdersLen + 2
-	winOrders = NewWinPanel(h, w, x, y, true, "  ID   Pair    Type   Orig.Amount   Amount   Price")
+	h = conf.OrdersLen + 3
+	tableOrders = NewTable(h, w, x, y, "Orders", []*TableField{
+		{"Type", -8, "s", 0, ""},
+		{"Orig.Amount", -6, ".2f", A_BOLD, ""},
+		{"Amount", -6, ".2f", A_BOLD, ""},
+		{"Price", -8, ".2f", A_BOLD, ""},
+		{"Avg.Price", -8, ".2f", A_BOLD, ""},
+	})
 
 	UpdatePanels()
 	DoUpdate()
@@ -348,10 +359,11 @@ func main() {
 			case bitfinex.WebsocketPosition:
 				if t.Term() == "pc" {
 					delete(positions, t.Pair)
+					tablePositions.DeleteRow(t.Pair)
 				} else {
 					positions[t.Pair] = t
+					updatePositions()
 				}
-				updatePositions()
 
 			case bitfinex.WebsocketOrder:
 				if t.Term() == "oc" {
