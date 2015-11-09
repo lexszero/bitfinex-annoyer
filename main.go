@@ -45,9 +45,8 @@ var (
 	positions  = make(map[string]bitfinex.WebsocketPosition)
 	orders     = make(map[int64]bitfinex.WebsocketOrder)
 
-	history        []HistoryRecord
-	hist           *HistoryRecord
-	historyUpdated time.Time
+	history []HistoryRecord
+	hist    *HistoryRecord
 
 	bookBidSorted, bookAskSorted OrderBook
 )
@@ -160,10 +159,6 @@ func updateHistoryInfo() {
 }
 
 func updateHistory() {
-	if time.Since(historyUpdated) < time.Second {
-		updateHistoryInfo()
-		return
-	}
 	baseline := conf.HistoryHeight / 2
 	var peak float64
 	for _, v := range history {
@@ -171,13 +166,12 @@ func updateHistory() {
 		peak = math.Max(t, peak)
 	}
 	scale := peak / float64(baseline)
-	winHistory.Clear()
+	winHistory.Erase()
 	for n, v := range history {
 		updateHistoryBar(n, baseline-1, v.BuyAmount/scale, Color_pair(clGreen))
 		updateHistoryBar(n, baseline, v.SellAmount/scale, Color_pair(clRed))
 	}
 	updateHistoryInfo()
-	historyUpdated = time.Now()
 }
 
 func main() {
